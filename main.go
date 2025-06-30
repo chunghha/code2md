@@ -233,7 +233,8 @@ func (fg *FileGatherer) shouldSkipHidden(name string) bool {
 
 func (fg *FileGatherer) processFile(path string, d fs.DirEntry, files *[]FileInfo,
 	extInclude, extExclude map[string]bool) error {
-	if !shouldIncludeFile(path, extInclude, extExclude) {
+	// *** CHANGE IS HERE: Call the new method on fg ***
+	if !fg.shouldIncludeFile(path, extInclude, extExclude) {
 		return nil
 	}
 
@@ -258,16 +259,32 @@ func (fg *FileGatherer) processFile(path string, d fs.DirEntry, files *[]FileInf
 	return fg.addFileToCollection(path, info, files)
 }
 
-func shouldIncludeFile(path string, extInclude, extExclude map[string]bool) bool {
-	ext := filepath.Ext(path)
+func (fg *FileGatherer) shouldIncludeFile(path string, extInclude, extExclude map[string]bool) bool {
 	fileName := filepath.Base(path)
+	ext := filepath.Ext(path)
 
-	// Special handling for files without extensions
+	// If we are including hidden files and this is a hidden file, prioritize it.
+	// It should be included unless its extension is explicitly excluded.
+	if fg.config.IncludeHidden && strings.HasPrefix(fileName, ".") {
+		// For a file like `.env`, ext is `.env`. Check if it's excluded.
+		if ext != "" && extExclude[ext] {
+			return false
+		}
+		// For a file like `.bashrc`, ext is `.bashrc`. Check if it's excluded.
+		if extExclude[fileName] {
+			return false
+		}
+
+		return true // It's a hidden file we want, so include it.
+	}
+
+	// Special handling for files without extensions (e.g., Makefile)
 	if ext == "" {
 		return extInclude[fileName]
 	}
 
-	return !extExclude[ext] && extInclude[ext]
+	// Default behavior: check if extension is in the include list and not the exclude list.
+	return extInclude[ext] && !extExclude[ext]
 }
 
 func (fg *FileGatherer) addFileToCollection(path string, info os.FileInfo, files *[]FileInfo) error {

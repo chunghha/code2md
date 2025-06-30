@@ -158,7 +158,6 @@ func getLanguageFromPath(path string) string {
 	ext := strings.ToLower(filepath.Ext(path))
 	fileName := strings.ToLower(filepath.Base(path))
 	langMap := map[string]string{
-		// --- THIS IS THE FIX ---
 		".go": "go",
 		// -----------------------
 		".py": "python", ".js": "javascript", ".ts": "typescript",

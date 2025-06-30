@@ -1,99 +1,125 @@
-# Code to Markdown
+# code2md
 
-A CLI tool in Go that gathers source code from a repository and converts it into a single markdown file suitable for LLM input. This tool is fast, flexible, and highly configurable.
+A high-performance, concurrent CLI tool that gathers all relevant source code from a repository and converts it into a single, well-structured markdown file. This output is perfect for providing context to Large Language Models (LLMs).
+
+The tool is fast, configurable, and uses smart defaults to ignore irrelevant files and directories, focusing only on the code that matters.
 
 ## Features
 
-**Smart File Detection:**
-- Automatically detects common source code file extensions.
-- Excludes common build/dependency directories (`node_modules`, `vendor`, etc.).
-- Handles special files like `Dockerfile` and `Makefile`.
-- Skips binary files automatically.
-
-**Flexible Filtering:**
-- `--include` / `-i`: Specify file extensions to include.
-- `--exclude` / `-e`: Exclude specific file extensions.
-- `--exclude-dirs` / `-d`: Exclude specific directories.
-- `--max-size` / `-s`: Set a maximum file size limit.
-- `--hidden` / `-H`: Include hidden files and directories.
+**Smart & Fast Processing:**
+- **Concurrent Scanning:** Processes files in parallel for maximum speed, using all available CPU cores.
+- **Intelligent Filtering:** Automatically ignores common dependency directories (`node_modules`, `vendor`), build artifacts (`target`, `dist`), and VCS folders (`.git`).
+- **Content-Aware Skipping:** Detects and skips binary files to keep the output clean.
+- **Default Exclusions:** Ignores common lockfiles (`pnpm-lock.yaml`, `bun.lockb`) and its own output (`codebase.md`) by default.
 
 **Powerful Configuration:**
-- All flags can be configured via a `.env` file for project-specific defaults.
-- Command-line flags always take precedence over `.env` settings.
+- **Command-Line Flags:** Customize behavior on the fly for specific, one-off tasks.
+- **Environment Variables:** Configure the tool globally using `CODE2MD_` prefixed variables.
+- **`.env` File Support:** Automatically loads configuration from a `.env` file in the project root for repository-specific settings.
 
-**High Performance & Observability:**
-- **Concurrent file processing** for significantly faster scans on large repositories.
-- **Structured logging** (`zap`) for clear and useful output, especially with the `--verbose` flag.
+**Flexible Output:**
+- **Custom Output File:** Specify the name of the generated markdown file.
+- **File & Directory Filtering:** Use flags or environment variables to include/exclude specific file extensions or directories.
+- **Size & Visibility Control:** Set a maximum file size to ignore large assets and choose whether to include hidden files and folders.
+- **Structured Markdown:** Generates a clean markdown file with a header, a linked table of contents, and properly syntax-highlighted code blocks for each file.
+- **Verbose Logging:** Use the `--verbose` flag to see detailed logs of the scanning process.
 
-**Rich Output:**
-- Generates a clean, well-structured markdown file.
-- Includes repository metadata (path, file count, total size).
-- Creates a clickable table of contents with links to each file.
-- Uses proper syntax highlighting hints for each code block.
+## Installation
 
-## Configuration
+Ensure you have Go installed (version 1.18 or newer).
 
-For project-specific settings, you can create a `.env` file in the directory you are scanning. The tool will automatically load it. Command-line flags will always override settings from the `.env` file.
+1.  **Clone the repository:**
+    ```bash
+    git clone https://github.com/chunghha/code2md.git
+    cd code2md
+    ```
 
-Here are the available environment variables:
-
-| Variable                 | Description                                      | Example                               |
-| ------------------------ | ------------------------------------------------ | ------------------------------------- |
-| `CODE2MD_OUTPUT_FILE`    | The name of the output markdown file.            | `CODE2MD_OUTPUT_FILE=project.md`      |
-| `CODE2MD_MAX_FILE_SIZE`  | Maximum file size in bytes.                      | `CODE2MD_MAX_FILE_SIZE=2048000`       |
-| `CODE2MD_INCLUDE_HIDDEN` | Set to `true` to include hidden files.           | `CODE2MD_INCLUDE_HIDDEN=true`         |
-| `CODE2MD_VERBOSE`        | Set to `true` for detailed log output.           | `CODE2MD_VERBOSE=true`                |
-| `CODE2MD_INCLUDE_EXT`    | Comma-separated list of file extensions to add.  | `CODE2MD_INCLUDE_EXT=.go,.js,.ts`     |
-| `CODE2MD_EXCLUDE_EXT`    | Comma-separated list of file extensions to skip. | `CODE2MD_EXCLUDE_EXT=.log,.tmp`       |
-| `CODE2MD_EXCLUDE_DIRS`   | Comma-separated list of directories to skip.     | `CODE2MD_EXCLUDE_DIRS=.git,build,dist` |
-
-## Usage Examples
-
-```bash
-# Basic usage - scan current directory
-./code2md
-
-# Scan a specific directory
-./code2md /path/to/your/project
-
-# Override .env settings with a flag
-./code2md -o custom-output.md
-
-# Include only specific extensions
-./code2md -i .go,.py,.js
-
-# Exclude certain extensions
-./code2md -e .log,.tmp
-
-# Get detailed logging output
-./code2md -v
-
-# Include hidden files like .bashrc or .env
-./code2md -H
-```
-
-## Installation & Building
-
-**Using `go-task` (Recommended):**
-
-This project uses `go-task` for simple build automation.
-
-1.  [Install go-task](https://taskfile.dev/installation/).
-2.  Run the build command from the project root:
+2.  **Build the binary:**
     ```bash
     task build
     ```
-
-**Using standard Go commands:**
-
-1.  Clone the repository.
-2.  From the project root, run the build command:
+    or
     ```bash
     go build -o code2md .
     ```
 
-After building, you can run the tool with `./code2md [options] [directory]`.
+3.  **(Optional) Move the binary to a directory in your PATH:**
+    To install code2md to **~/bin/**
+    ```bash
+    task install
+    ```
+    or
+    ```bash
+    mv code2md /usr/local/bin/
+    ```
 
+## Usage
+
+**Basic Usage:**
+Scan the current directory and create `codebase.md`.
+```bash
+code2md
+```
+
+**Scan a specific directory:**
+```bash
+code2md /path/to/your/project
+```
+
+**Customizing with Flags:**
+```bash
+# Specify a different output file
+code2md -o my_project.md
+
+# Include only Go and Python files
+code2md -i .go,.py
+
+# Exclude all test files
+code2md -e _test.go
+
+# Exclude the 'dist' and 'coverage' directories
+code2md -d dist,coverage
+
+# Include hidden files (e.g., .github, .vscode)
+code2md -H
+
+# See everything the tool is doing
+code2md --verbose
+```
+
+## Configuration
+
+The tool uses a flexible configuration system with a clear order of precedence.
+
+### Configuration Precedence
+
+Settings are applied in the following order. Each level overrides the previous one:
+1.  **Defaults:** Sensible built-in values.
+2.  **`.env` File:** Values loaded from a `.env` file in the directory where `code2md` is run.
+3.  **Environment Variables:** System-wide variables prefixed with `CODE2MD_`.
+4.  **Command-Line Flags:** The highest precedence, for specific, one-time overrides.
+
+### Environment Variables
+
+You can set the following environment variables. For example, you can add `export CODE2MD_EXCLUDE_DIRS="dist,build,coverage"` to your `.bashrc` or `.zshrc`.
+
+| Variable                  | Flag (`--`)    | Type           | Description                                      |
+| ------------------------- | -------------- | -------------- | ------------------------------------------------ |
+| `CODE2MD_OUTPUT_FILE`     | `output`       | `string`       | Path for the output markdown file.               |
+| `CODE2MD_INCLUDE_EXT`     | `include`      | `string` (csv) | Comma-separated list of file extensions to include. |
+| `CODE2MD_EXCLUDE_EXT`     | `exclude`      | `string` (csv) | Comma-separated list of file extensions to exclude. |
+| `CODE2MD_EXCLUDE_DIRS`    | `exclude-dirs` | `string` (csv) | Comma-separated list of directories to exclude.  |
+| `CODE2MD_MAX_SIZE`        | `max-size`     | `int`          | Maximum file size in bytes.                      |
+| `CODE2MD_INCLUDE_HIDDEN`  | `hidden`       | `bool`         | Set to `true` to include hidden files.           |
+| `CODE2MD_VERBOSE`         | `verbose`      | `bool`         | Set to `true` for detailed logging.              |
+
+## Development
+
+This project uses `go-task` for task automation.
+
+-   **Run all tests:** `task test`
+-   **Run linters:** `task lint`
+-   **Build the binary:** `task build`
 ---
 
 ### Credit

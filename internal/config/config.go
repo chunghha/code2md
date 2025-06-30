@@ -7,18 +7,19 @@ import (
 	"strings"
 
 	"github.com/joho/godotenv"
+	"github.com/kelseyhightower/envconfig"
 	"github.com/spf13/cobra"
 )
 
 // Config holds all the configuration for the application.
 type Config struct {
-	OutputFile    string
-	IncludeExt    []string
-	ExcludeExt    []string
-	ExcludeDirs   []string
-	MaxFileSize   int64
-	IncludeHidden bool
-	Verbose       bool
+	OutputFile    string   `envconfig:"OUTPUT_FILE"`
+	IncludeExt    []string `envconfig:"INCLUDE_EXT"`
+	ExcludeExt    []string `envconfig:"EXCLUDE_EXT"`
+	ExcludeDirs   []string `envconfig:"EXCLUDE_DIRS"`
+	MaxFileSize   int64    `envconfig:"MAX_SIZE"`
+	IncludeHidden bool     `envconfig:"INCLUDE_HIDDEN"`
+	Verbose       bool     `envconfig:"VERBOSE"`
 }
 
 // DefaultExtensions returns the default list of source code extensions.
@@ -38,6 +39,16 @@ func DefaultExcludeDirs() []string {
 		".git", ".svn", ".hg", "node_modules", "vendor", "target", "build",
 		"dist", "out", ".idea", ".vscode", "__pycache__", ".pytest_cache",
 		".tox", "venv", ".env", ".venv", "env", ".DS_Store", "thumbs.db",
+		"coverage",
+	}
+}
+
+// DefaultExcludeFiles returns the default list of specific files to exclude.
+func DefaultExcludeFiles() []string {
+	return []string{
+		"pnpm-lock.yaml",
+		"bun.lockb",
+		"codebase.md",
 	}
 }
 
@@ -97,4 +108,20 @@ func MergeEnv(cmd *cobra.Command, cfg *Config, dir string) error {
 	}
 
 	return nil
+}
+
+// Load populates a Config struct from environment variables and a .env file.
+// It follows the standard precedence: .env file < actual environment variables.
+func Load() (*Config, error) {
+	// Load .env file. It's okay if it doesn't exist.
+	_ = godotenv.Load()
+
+	var c Config
+
+	err := envconfig.Process("CODE2MD", &c)
+	if err != nil {
+		return nil, err
+	}
+
+	return &c, nil
 }

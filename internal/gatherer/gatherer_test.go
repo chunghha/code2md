@@ -2,12 +2,17 @@ package gatherer
 
 import (
 	"code2md/internal/config"
+	"context"
 	"os"
 	"path/filepath"
 	"sort"
 	"testing"
+	"time"
+
+	"go.uber.org/zap"
 )
 
+// setupTestFileSystem is a helper to create a consistent test environment.
 func setupTestFileSystem(t *testing.T) string {
 	t.Helper()
 	tmpDir := t.TempDir()
@@ -58,9 +63,13 @@ func TestFileGatherer_GatherFiles_Default(t *testing.T) {
 		MaxFileSize:   100,
 		IncludeHidden: false,
 	}
-	gatherer := NewFileGatherer(cfg, tmpDir)
+	// Create a no-op logger for this test
+	logger := zap.NewNop()
+	// Pass the logger to the gatherer
+	gatherer := NewFileGatherer(cfg, tmpDir, logger)
 
-	files, err := gatherer.GatherFiles()
+	// Pass a context to GatherFiles
+	files, err := gatherer.GatherFiles(context.Background())
 	if err != nil {
 		t.Fatalf("GatherFiles() returned an unexpected error: %v", err)
 	}
@@ -75,9 +84,10 @@ func TestFileGatherer_GatherFiles_WithHidden(t *testing.T) {
 		MaxFileSize:   100,
 		IncludeHidden: true,
 	}
-	gatherer := NewFileGatherer(cfg, tmpDir)
+	logger := zap.NewNop()
+	gatherer := NewFileGatherer(cfg, tmpDir, logger)
 
-	files, err := gatherer.GatherFiles()
+	files, err := gatherer.GatherFiles(context.Background())
 	if err != nil {
 		t.Fatalf("GatherFiles() returned an unexpected error: %v", err)
 	}
@@ -86,6 +96,37 @@ func TestFileGatherer_GatherFiles_WithHidden(t *testing.T) {
 	assertFilePathsMatch(t, files, expectedFiles)
 }
 
+func TestFileGatherer_Concurrency(t *testing.T) {
+	tmpDir := setupTestFileSystem(t)
+	cfg := &config.Config{
+		MaxFileSize: 1024 * 1024,
+	}
+	logger := zap.NewNop()
+
+	gatherer := NewFileGatherer(cfg, tmpDir, logger)
+	// Override the default file reader with one that has an artificial delay
+	gatherer.readFileFunc = func(path string) ([]byte, error) {
+		time.Sleep(100 * time.Millisecond) // Artificial delay
+		return os.ReadFile(path)
+	}
+
+	startTime := time.Now()
+
+	_, err := gatherer.GatherFiles(context.Background())
+	if err != nil {
+		t.Fatalf("GatherFiles returned an unexpected error: %v", err)
+	}
+
+	duration := time.Since(startTime)
+
+	// With concurrency, processing 4 valid files with a 100ms delay each
+	// should take significantly less than 400ms (ideally just over 100ms).
+	if duration > 300*time.Millisecond {
+		t.Errorf("Expected concurrent processing to take less than 300ms, but it took %v", duration)
+	}
+}
+
+// assertFilePathsMatch is a helper to avoid duplicating assertion logic.
 func assertFilePathsMatch(t *testing.T, actualFiles []FileInfo, expectedPaths []string) {
 	t.Helper()
 

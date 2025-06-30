@@ -2,12 +2,17 @@ package gatherer
 
 import (
 	"code2md/internal/config"
-	"fmt"
+	"context"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
+	"sync"
+
+	"go.uber.org/zap"
+	"golang.org/x/sync/errgroup"
 )
 
 // FileInfo holds the details of a gathered file.
@@ -19,34 +24,163 @@ type FileInfo struct {
 
 // FileGatherer is responsible for collecting files from the filesystem.
 type FileGatherer struct {
-	config   *config.Config
-	rootPath string
+	config       *config.Config
+	rootPath     string
+	logger       *zap.Logger
+	readFileFunc func(path string) ([]byte, error) // For testability
 }
 
 // NewFileGatherer creates a new FileGatherer.
-func NewFileGatherer(cfg *config.Config, rootPath string) *FileGatherer {
+func NewFileGatherer(cfg *config.Config, rootPath string, logger *zap.Logger) *FileGatherer {
 	return &FileGatherer{
-		config:   cfg,
-		rootPath: rootPath,
+		config:       cfg,
+		rootPath:     rootPath,
+		logger:       logger,
+		readFileFunc: os.ReadFile, // Default to the real os.ReadFile
 	}
 }
 
-// GatherFiles walks the directory and collects all relevant files.
-func (fg *FileGatherer) GatherFiles() ([]FileInfo, error) {
-	var files []FileInfo
+// GatherFiles walks the directory and collects all relevant files concurrently.
+func (fg *FileGatherer) GatherFiles(ctx context.Context) ([]FileInfo, error) {
+	var (
+		files []FileInfo
+		mu    sync.Mutex
+	)
 
 	extInclude, extExclude := fg.prepareExtensionFilters()
 	dirExclude := fg.prepareDirFilters()
 
-	err := filepath.WalkDir(fg.rootPath, func(path string, d fs.DirEntry, err error) error {
-		return fg.processWalkEntry(path, d, err, &files, extInclude, extExclude, dirExclude)
+	g, ctx := errgroup.WithContext(ctx)
+	paths := make(chan string)
+
+	// Start the producer goroutine.
+	g.Go(func() error {
+		defer close(paths)
+		return fg.walkAndProduce(ctx, paths, dirExclude)
 	})
+
+	// Start the consumer (worker) goroutines.
+	for i := 0; i < runtime.NumCPU(); i++ {
+		g.Go(func() error {
+			for path := range paths {
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				default:
+					if fileInfo, ok := fg.processFile(path, extInclude, extExclude); ok {
+						mu.Lock()
+
+						files = append(files, fileInfo)
+
+						mu.Unlock()
+					}
+				}
+			}
+
+			return nil
+		})
+	}
+
+	if err := g.Wait(); err != nil {
+		return nil, err
+	}
 
 	sort.Slice(files, func(i, j int) bool {
 		return files[i].Path < files[j].Path
 	})
 
-	return files, err
+	return files, nil
+}
+
+// walkAndProduce is the producer function that walks the filesystem.
+func (fg *FileGatherer) walkAndProduce(ctx context.Context, paths chan<- string, dirExclude map[string]bool) error {
+	return filepath.WalkDir(fg.rootPath, func(path string, d fs.DirEntry, err error) error {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+			if err != nil {
+				fg.logger.Warn("Cannot access path", zap.String("path", path), zap.Error(err))
+				return nil // Continue walking
+			}
+
+			if fg.shouldSkip(d, dirExclude) {
+				if d.IsDir() {
+					return filepath.SkipDir
+				}
+
+				return nil
+			}
+
+			if d.IsDir() {
+				return nil
+			}
+
+			paths <- path
+
+			return nil
+		}
+	})
+}
+
+// shouldSkip determines if a directory entry should be skipped based on its name or type.
+func (fg *FileGatherer) shouldSkip(d fs.DirEntry, dirExclude map[string]bool) bool {
+	if !fg.config.IncludeHidden && strings.HasPrefix(d.Name(), ".") {
+		return true
+	}
+
+	if d.IsDir() && dirExclude[d.Name()] {
+		return true
+	}
+
+	return false
+}
+
+// processFile handles the logic for reading and validating a single file.
+func (fg *FileGatherer) processFile(path string, extInclude, extExclude map[string]bool) (FileInfo, bool) {
+	if !fg.shouldIncludeFile(path, extInclude, extExclude) {
+		return FileInfo{}, false
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		fg.logger.Warn("Cannot get info for file", zap.String("path", path), zap.Error(err))
+		return FileInfo{}, false
+	}
+
+	if info.Size() > fg.config.MaxFileSize {
+		fg.logger.Debug("Skipping large file",
+			zap.String("path", path),
+			zap.Int64("size", info.Size()),
+			zap.Int64("max_size", fg.config.MaxFileSize),
+		)
+
+		return FileInfo{}, false
+	}
+
+	content, err := fg.readFileFunc(path)
+	if err != nil {
+		fg.logger.Warn("Cannot read file", zap.String("path", path), zap.Error(err))
+		return FileInfo{}, false
+	}
+
+	if isBinary(content) {
+		fg.logger.Debug("Skipping binary file", zap.String("path", path))
+		return FileInfo{}, false
+	}
+
+	relPath, err := filepath.Rel(fg.rootPath, path)
+	if err != nil {
+		relPath = path
+	}
+
+	fg.logger.Debug("Added file", zap.String("path", relPath), zap.Int64("size", info.Size()))
+
+	return FileInfo{
+		Path:    relPath,
+		Size:    info.Size(),
+		Content: string(content),
+	}, true
 }
 
 func (fg *FileGatherer) prepareExtensionFilters() (extInclude, extExclude map[string]bool) {
@@ -83,66 +217,6 @@ func (fg *FileGatherer) prepareDirFilters() map[string]bool {
 	return dirExclude
 }
 
-func (fg *FileGatherer) processWalkEntry(path string, d fs.DirEntry, err error, files *[]FileInfo,
-	extInclude, extExclude, dirExclude map[string]bool) error {
-	if err != nil {
-		if fg.config.Verbose {
-			fmt.Printf("Warning: Cannot access %s: %v\n", path, err)
-		}
-
-		return nil // Continue walking
-	}
-
-	if fg.shouldSkipHidden(d.Name()) {
-		if d.IsDir() {
-			return filepath.SkipDir
-		}
-
-		return nil
-	}
-
-	if d.IsDir() && dirExclude[d.Name()] {
-		return filepath.SkipDir
-	}
-
-	if d.IsDir() {
-		return nil
-	}
-
-	return fg.processFile(path, d, files, extInclude, extExclude)
-}
-
-func (fg *FileGatherer) shouldSkipHidden(name string) bool {
-	return !fg.config.IncludeHidden && strings.HasPrefix(name, ".")
-}
-
-func (fg *FileGatherer) processFile(path string, d fs.DirEntry, files *[]FileInfo,
-	extInclude, extExclude map[string]bool) error {
-	if !fg.shouldIncludeFile(path, extInclude, extExclude) {
-		return nil
-	}
-
-	info, err := d.Info()
-	if err != nil {
-		if fg.config.Verbose {
-			fmt.Printf("Warning: Cannot get info for %s: %v\n", path, err)
-		}
-
-		return nil
-	}
-
-	if info.Size() > fg.config.MaxFileSize {
-		if fg.config.Verbose {
-			fmt.Printf("Skipping %s (size: %d bytes, max: %d bytes)\n",
-				path, info.Size(), fg.config.MaxFileSize)
-		}
-
-		return nil
-	}
-
-	return fg.addFileToCollection(path, info, files)
-}
-
 func (fg *FileGatherer) shouldIncludeFile(path string, extInclude, extExclude map[string]bool) bool {
 	fileName := filepath.Base(path)
 	ext := filepath.Ext(path)
@@ -164,42 +238,6 @@ func (fg *FileGatherer) shouldIncludeFile(path string, extInclude, extExclude ma
 	}
 
 	return extInclude[ext] && !extExclude[ext]
-}
-
-func (fg *FileGatherer) addFileToCollection(path string, info os.FileInfo, files *[]FileInfo) error {
-	content, err := os.ReadFile(path)
-	if err != nil {
-		if fg.config.Verbose {
-			fmt.Printf("Warning: Cannot read %s: %v\n", path, err)
-		}
-
-		return nil
-	}
-
-	if isBinary(content) {
-		if fg.config.Verbose {
-			fmt.Printf("Skipping binary file: %s\n", path)
-		}
-
-		return nil
-	}
-
-	relPath, err := filepath.Rel(fg.rootPath, path)
-	if err != nil {
-		relPath = path
-	}
-
-	*files = append(*files, FileInfo{
-		Path:    relPath,
-		Size:    info.Size(),
-		Content: string(content),
-	})
-
-	if fg.config.Verbose {
-		fmt.Printf("Added: %s (%d bytes)\n", relPath, info.Size())
-	}
-
-	return nil
 }
 
 func isBinary(data []byte) bool {

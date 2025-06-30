@@ -1,0 +1,31 @@
+version: "3"
+env:
+  PGM_NAME: code2md
+tasks:
+  build:
+    deps: [typo, format, lint:wsl, lint]
+    cmds:
+      - go mod tidy
+      - go build -o $PGM_NAME
+  format:
+    cmds:
+      - go fmt
+  install:
+    deps: [build]
+    cmds:
+      - cp $PGM_NAME ~/bin/
+  lint:
+    cmds:
+      - golangci-lint run -v
+  lint:wsl:
+    cmds:
+      - golangci-lint run --no-config --enable wsl_v5 --fix
+  test:
+    cmds:
+      - go test ./...
+  typo:
+    cmds:
+      - typos *.go
+  typo:fix:
+    cmds:
+      - typos -w *.go

@@ -2,7 +2,7 @@ version: "3"
 
 vars:
   # Define the version in one central place.
-  VERSION: 0.1.0
+  VERSION: 0.1.1
   # Construct the ldflags string. Note the full path to the 'version' variable.
   LDFLAGS: '-ldflags="-X ''code2md/cmd/cli.version={{.VERSION}}''"'
 

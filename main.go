@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	cli "code2md/cmd/code2md"
+	cli "code2md/cmd/cli"
 )
 
 func main() {

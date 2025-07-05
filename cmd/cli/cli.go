@@ -13,17 +13,16 @@ import (
 	"go.uber.org/zap"
 )
 
+var version = "dev"
+
 const defaultMaxFileSize = 1024 * 1024 // 1MB
 
-// Execute is the main entry point for the CLI application.
 func Execute() error {
-	// Load config from environment first.
 	cfg, err := config.Load()
 	if err != nil {
 		return fmt.Errorf("error loading configuration from environment: %w", err)
 	}
 
-	// Setup logger
 	var logger *zap.Logger
 	if cfg.Verbose {
 		logger, err = zap.NewDevelopment()
@@ -34,19 +33,16 @@ func Execute() error {
 	if err != nil {
 		return fmt.Errorf("failed to create logger: %w", err)
 	}
-	// --- THIS IS THE FIX ---
+
 	defer func() {
 		if err := logger.Sync(); err != nil {
-			// Use fmt.Fprintf to print to stderr directly, as the logger might be failing.
 			fmt.Fprintf(os.Stderr, "Error syncing logger: %v\n", err)
 		}
 	}()
-	// -----------------------
 
 	return createRootCommand(cfg, logger).Execute()
 }
 
-// createRootCommand now accepts the pre-loaded config and the logger.
 func createRootCommand(cfg *config.Config, logger *zap.Logger) *cobra.Command {
 	rootCmd := &cobra.Command{
 		Use:   "code2md [directory]",
@@ -55,10 +51,11 @@ func createRootCommand(cfg *config.Config, logger *zap.Logger) *cobra.Command {
 and converts them into a single markdown file suitable for feeding to Large Language Models.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// Use the command's context, which respects cancellation (e.g., Ctrl+C).
 			return runCode2MD(cmd.Context(), cfg, logger, args)
 		},
 	}
+
+	rootCmd.Version = version
 
 	rootCmd.Flags().StringVarP(&cfg.OutputFile, "output", "o", "codebase.md", "Output markdown file")
 
@@ -69,7 +66,6 @@ and converts them into a single markdown file suitable for feeding to Large Lang
 	rootCmd.Flags().StringSliceVarP(&cfg.IncludeExt, "include", "i", []string{}, "File extensions to include (e.g., .go,.py)")
 	rootCmd.Flags().StringSliceVarP(&cfg.ExcludeExt, "exclude", "e", []string{}, "File extensions to exclude")
 	rootCmd.Flags().StringSliceVarP(&cfg.ExcludeDirs, "exclude-dirs", "d", []string{}, "Directories to exclude")
-
 	rootCmd.Flags().Int64VarP(&cfg.MaxFileSize, "max-size", "s", defaultMaxFileSize, "Maximum file size in bytes (default: 1MB)")
 
 	if cfg.MaxFileSize != 0 {

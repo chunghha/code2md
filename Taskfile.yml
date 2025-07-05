@@ -1,12 +1,21 @@
 version: "3"
+
+vars:
+  # Define the version in one central place.
+  VERSION: 0.1.0
+  # Construct the ldflags string. Note the full path to the 'version' variable.
+  LDFLAGS: '-ldflags="-X ''code2md/cmd/cli.version={{.VERSION}}''"'
+
 env:
   PGM_NAME: code2md
+
 tasks:
   build:
     deps: [typo, format, lint]
     cmds:
       - go mod tidy
-      - go build -o $PGM_NAME .
+      # Update the build command to include the ldflags.
+      - go build {{.LDFLAGS}} -o $PGM_NAME .
   format:
     cmds:
       - go fmt ./...
@@ -15,13 +24,11 @@ tasks:
     cmds:
       - cp $PGM_NAME ~/bin/
   lint:
-    deps: [lint:wsl]
+    deps: ["lint:wsl"]
     cmds:
-      # Run the main lint check across all packages
       - golangci-lint run ./... -v
   lint:wsl:
     cmds:
-      # Run the wsl fix check across all packages
       - golangci-lint run ./... --no-config --enable wsl_v5 --fix
   test:
     cmds:

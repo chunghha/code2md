@@ -3,23 +3,26 @@ env:
   PGM_NAME: code2md
 tasks:
   build:
-    deps: [typo, format, lint:wsl, lint]
+    deps: [typo, format, lint]
     cmds:
       - go mod tidy
-      - go build -o $PGM_NAME
+      - go build -o $PGM_NAME .
   format:
     cmds:
-      - go fmt
+      - go fmt ./...
   install:
     deps: [build]
     cmds:
       - cp $PGM_NAME ~/bin/
   lint:
+    deps: [lint:wsl]
     cmds:
-      - golangci-lint run -v
+      # Run the main lint check across all packages
+      - golangci-lint run ./... -v
   lint:wsl:
     cmds:
-      - golangci-lint run --no-config --enable wsl_v5 --fix
+      # Run the wsl fix check across all packages
+      - golangci-lint run ./... --no-config --enable wsl_v5 --fix
   test:
     cmds:
       - go test ./...

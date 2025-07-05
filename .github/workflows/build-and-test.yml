@@ -1,9 +1,9 @@
 name: Build and Test
 on:
   push:
-    branches: ["main"]
-  pull_request:
-    branches: ["main"]
+    tags:
+      - "v*.*.*" # This workflow runs on tags like v1.0.0, v1.1.0, etc.
+
 jobs:
   build:
     runs-on: ubuntu-latest

@@ -5,9 +5,12 @@ import (
 	"code2md/internal/gatherer"
 	"code2md/internal/generator"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
+	"syscall"
 
 	"github.com/spf13/cobra"
 	"go.uber.org/zap"
@@ -34,9 +37,15 @@ func Execute() error {
 		return fmt.Errorf("failed to create logger: %w", err)
 	}
 
+	// Defer a function that syncs the logger but specifically ignores the
+	// benign "inappropriate ioctl for device" error.
 	defer func() {
-		if err := logger.Sync(); err != nil {
-			fmt.Fprintf(os.Stderr, "Error syncing logger: %v\n", err)
+		if syncErr := logger.Sync(); syncErr != nil {
+			// Check if the error is the specific syscall error we want to ignore.
+			// This is a known issue when stdout/stderr is not a TTY.
+			if !errors.Is(syncErr, syscall.ENOTTY) {
+				fmt.Fprintf(os.Stderr, "Error syncing logger: %v\n", syncErr)
+			}
 		}
 	}()
 
@@ -74,6 +83,7 @@ and converts them into a single markdown file suitable for feeding to Large Lang
 
 	rootCmd.Flags().BoolVarP(&cfg.IncludeHidden, "hidden", "H", false, "Include hidden files and directories")
 	rootCmd.Flags().BoolVarP(&cfg.Verbose, "verbose", "v", false, "Verbose output")
+	rootCmd.Flags().BoolVar(&cfg.DryRun, "dry-run", false, "List files that would be included without generating the output file")
 
 	return rootCmd
 }
@@ -99,6 +109,23 @@ func runCode2MD(ctx context.Context, cfg *config.Config, logger *zap.Logger, arg
 	}
 
 	logger.Info("File gathering complete", zap.Int("file_count", len(files)))
+
+	if cfg.DryRun {
+		fmt.Println("Dry Run: The following files would be included in the output:")
+
+		paths := make([]string, len(files))
+		for i, f := range files {
+			paths[i] = f.Path
+		}
+
+		sort.Strings(paths)
+
+		for _, path := range paths {
+			fmt.Println(path)
+		}
+
+		return nil
+	}
 
 	gen := generator.NewMarkdownGenerator(cfg)
 

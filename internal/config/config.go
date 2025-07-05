@@ -14,6 +14,7 @@ type Config struct {
 	MaxFileSize   int64    `envconfig:"MAX_SIZE"`
 	IncludeHidden bool     `envconfig:"INCLUDE_HIDDEN"`
 	Verbose       bool     `envconfig:"VERBOSE"`
+	DryRun        bool     `envconfig:"DRY_RUN"`
 }
 
 // DefaultExtensions returns the default list of source code extensions.

@@ -3,6 +3,7 @@ module code2md
 go 1.24.4
 
 require (
+	github.com/gobwas/glob v0.2.3
 	github.com/joho/godotenv v1.5.1
 	github.com/kelseyhightower/envconfig v1.4.0
 	github.com/spf13/cobra v1.9.1

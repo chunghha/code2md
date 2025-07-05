@@ -28,7 +28,8 @@ func DefaultExtensions() []string {
 	}
 }
 
-// DefaultExcludeDirs returns the default list of directories to exclude.
+// DefaultExcludeDirs returns the comprehensive default list of directories to exclude.
+// This list is used when a .gitignore file is NOT found in the repository.
 func DefaultExcludeDirs() []string {
 	return []string{
 		".git", ".svn", ".hg", "node_modules", "vendor", "target", "build",
@@ -48,9 +49,7 @@ func DefaultExcludeFiles() []string {
 }
 
 // Load populates a Config struct from environment variables and a .env file.
-// It follows the standard precedence: .env file < actual environment variables.
 func Load() (*Config, error) {
-	// Load .env file. It's okay if it doesn't exist.
 	_ = godotenv.Load()
 
 	var c Config

@@ -23,24 +23,38 @@ type FileInfo struct {
 
 // FileGatherer is responsible for collecting files from the filesystem.
 type FileGatherer struct {
-	config   *config.Config
-	rootPath string
-	logger   *zap.Logger
+	config          *config.Config
+	rootPath        string
+	logger          *zap.Logger
+	gitignoreParser *GitignoreParser
+	gitignoreExists bool // Flag to track if .gitignore was found.
 }
 
 // NewFileGatherer creates a new FileGatherer.
 func NewFileGatherer(cfg *config.Config, rootPath string, logger *zap.Logger) *FileGatherer {
+	gitignoreParser := NewGitignoreParser(rootPath)
+	err := gitignoreParser.LoadGitignore()
+
+	// Check if the error was specifically "file does not exist".
+	gitignoreExists := !os.IsNotExist(err)
+	if err != nil && gitignoreExists {
+		logger.Warn("Failed to load or parse .gitignore", zap.Error(err))
+	}
+
 	return &FileGatherer{
-		config:   cfg,
-		rootPath: rootPath,
-		logger:   logger,
+		config:          cfg,
+		rootPath:        rootPath,
+		logger:          logger,
+		gitignoreParser: gitignoreParser,
+		gitignoreExists: gitignoreExists,
 	}
 }
 
 // GatherFiles orchestrates the concurrent file gathering pipeline.
 func (fg *FileGatherer) GatherFiles(ctx context.Context) ([]FileInfo, error) {
 	extInclude, extExclude := fg.prepareExtensionFilters()
-	dirExclude := fg.prepareDirFilters()
+	// Pass the gitignore existence flag to the directory filter preparation.
+	dirExclude := fg.prepareDirFilters(fg.gitignoreExists)
 
 	paths := make(chan string)
 	results := make(chan FileInfo)
@@ -62,7 +76,7 @@ func (fg *FileGatherer) GatherFiles(ctx context.Context) ([]FileInfo, error) {
 		close(results)
 	}()
 
-	var files []FileInfo //nolint:prealloc // The size of the 'results' channel is unknown in advance.
+	var files []FileInfo //nolint:prealloc // The final size is unknown as files are received from a channel.
 	for file := range results {
 		files = append(files, file)
 	}
@@ -92,6 +106,19 @@ func (fg *FileGatherer) producer(ctx context.Context, paths chan<- string, dirEx
 				return nil
 			}
 
+			// Always check gitignore first. This is the highest priority.
+			if fg.gitignoreParser.ShouldIgnore(path) {
+				if d.IsDir() {
+					fg.logger.Debug("Skipping directory tree (gitignore)", zap.String("dir", path))
+					return filepath.SkipDir
+				}
+
+				fg.logger.Debug("Skipping file (gitignore)", zap.String("file", path))
+
+				return nil
+			}
+
+			// Handle default directory and hidden directory exclusions.
 			if d.IsDir() {
 				if dirExclude[d.Name()] || fg.shouldSkipHidden(d.Name()) {
 					fg.logger.Debug("Skipping directory tree", zap.String("dir", d.Name()))
@@ -195,12 +222,10 @@ func (fg *FileGatherer) prepareExtensionFilters() (extInclude, extExclude map[st
 		}
 	}
 
-	// Add default excluded extensions from config
 	for _, ext := range fg.config.ExcludeExt {
 		extExclude[ext] = true
 	}
 
-	// Add default excluded files to the same map
 	for _, file := range config.DefaultExcludeFiles() {
 		extExclude[file] = true
 	}
@@ -208,12 +233,24 @@ func (fg *FileGatherer) prepareExtensionFilters() (extInclude, extExclude map[st
 	return extInclude, extExclude
 }
 
-func (fg *FileGatherer) prepareDirFilters() map[string]bool {
+// prepareDirFilters now chooses which exclusion list to use.
+func (fg *FileGatherer) prepareDirFilters(gitignoreExists bool) map[string]bool {
 	dirExclude := make(map[string]bool)
-	for _, dir := range config.DefaultExcludeDirs() {
-		dirExclude[dir] = true
+
+	var defaultDirs []string
+
+	if gitignoreExists {
+		// .gitignore exists, so be minimal. Only exclude VCS directories.
+		defaultDirs = []string{".git", ".svn", ".hg"}
+	} else {
+		// No .gitignore, so use the comprehensive "helpful" list.
+		defaultDirs = config.DefaultExcludeDirs()
 	}
 
+	for _, dir := range defaultDirs {
+		dirExclude[dir] = true
+	}
+	// Always add user-provided exclusions from the command line.
 	for _, dir := range fg.config.ExcludeDirs {
 		dirExclude[dir] = true
 	}
@@ -229,7 +266,6 @@ func (fg *FileGatherer) shouldIncludeFile(path string, extInclude, extExclude ma
 	fileName := filepath.Base(path)
 	ext := filepath.Ext(path)
 
-	// First, check if the exact filename is in the exclusion list.
 	if extExclude[fileName] {
 		return false
 	}
@@ -238,7 +274,7 @@ func (fg *FileGatherer) shouldIncludeFile(path string, extInclude, extExclude ma
 		if ext != "" && extExclude[ext] {
 			return false
 		}
-		// This check is now redundant due to the check at the top, but is harmless.
+
 		if extExclude[fileName] {
 			return false
 		}
@@ -254,18 +290,16 @@ func (fg *FileGatherer) shouldIncludeFile(path string, extInclude, extExclude ma
 }
 
 func isBinary(data []byte) bool {
-	// Simple heuristic: if file contains null bytes, it's likely binary
 	for _, b := range data {
 		if b == 0 {
 			return true
 		}
 	}
 
-	// Check for very high ratio of non-printable characters
 	nonPrintable := 0
 
 	for _, b := range data {
-		if b < 32 && b != 9 && b != 10 && b != 13 { // Allow tab, newline, carriage return
+		if b < 32 && b != 9 && b != 10 && b != 13 {
 			nonPrintable++
 		}
 	}

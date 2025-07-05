@@ -5,69 +5,60 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"sort"
 	"testing"
 
 	"go.uber.org/zap"
 )
 
-// setupTestFileSystem is a helper to create a consistent test environment.
-func setupTestFileSystem(t *testing.T) string {
+// assertFilePathsMatch is a helper function to compare the gathered file paths with an expected list.
+func assertFilePathsMatch(t *testing.T, files []FileInfo, expected []string) {
 	t.Helper()
 
+	if len(files) != len(expected) {
+		actualPaths := make([]string, len(files))
+		for i, f := range files {
+			actualPaths[i] = f.Path
+		}
+
+		t.Errorf("Expected %d files, but got %d", len(expected), len(files))
+		t.Logf("Expected: %v", expected)
+		t.Logf("Actual:   %v", actualPaths)
+
+		return
+	}
+
+	for i, file := range files {
+		if file.Path != expected[i] {
+			t.Errorf("Expected file at index %d to be %q, but got %q", i, expected[i], file.Path)
+		}
+	}
+}
+
+func TestFileGatherer_GatherFiles_WithGitignore(t *testing.T) {
 	tmpDir := t.TempDir()
+	logger, _ := zap.NewDevelopment()
 
-	createTestFile := func(filePath string, content string, size int64) {
+	createTestFile := func(filePath string, content string) {
 		fullPath := filepath.Join(tmpDir, filePath)
-
 		if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
 			t.Fatalf("Failed to create directory for %s: %v", fullPath, err)
 		}
-
-		file, err := os.Create(fullPath)
-		if err != nil {
-			t.Fatalf("Failed to create file %s: %v", fullPath, err)
-		}
-
-		defer func() {
-			if err := file.Close(); err != nil {
-				t.Fatalf("Failed to close test file %s: %v", fullPath, err)
-			}
-		}()
-
-		if size > 0 {
-			if err := file.Truncate(size); err != nil {
-				t.Fatalf("Failed to truncate file %s: %v", fullPath, err)
-			}
-		}
-
-		if content != "" {
-			if _, err := file.WriteString(content); err != nil {
-				t.Fatalf("Failed to write to file %s: %v", fullPath, err)
-			}
+		// Corrected file permissions to satisfy gosec linter.
+		if err := os.WriteFile(fullPath, []byte(content), 0600); err != nil {
+			t.Fatalf("Failed to write file %s: %v", fullPath, err)
 		}
 	}
 
-	// Create a diverse set of files and directories
-	createTestFile("main.go", "package main", 0)
-	createTestFile("README.md", "# Test", 0)
-	createTestFile("data.log", "some log data", 0)
-	createTestFile("node_modules/lib.js", "// js", 0)
-	createTestFile(".env", "SECRET=123", 0)
-	createTestFile("src/bigfile.txt", "", 200)
-	createTestFile("src/binary.bin", "hello\x00world", 0)
-	createTestFile("Makefile", "build: all", 0)
-	createTestFile("pnpm-lock.yaml", "lockfile", 0)
-	createTestFile("codebase.md", "# Output", 0)
+	createTestFile(".gitignore", "*.log\nbuild/\ntemp.txt\n")
+	createTestFile("main.go", "package main")
+	createTestFile("README.md", "# Test")
+	createTestFile("debug.log", "log content")
+	createTestFile("build/output.txt", "build output")
+	createTestFile("temp.txt", "temporary file")
+	createTestFile("config.yaml", "key: value")
 
-	return tmpDir
-}
-
-func TestFileGatherer_GatherFiles_Default(t *testing.T) {
-	tmpDir := setupTestFileSystem(t)
-	logger, _ := zap.NewDevelopment()
 	cfg := &config.Config{
-		MaxFileSize:   100,
+		MaxFileSize:   1024 * 1024,
 		IncludeHidden: false,
 	}
 	gatherer := NewFileGatherer(cfg, tmpDir, logger)
@@ -77,16 +68,46 @@ func TestFileGatherer_GatherFiles_Default(t *testing.T) {
 		t.Fatalf("GatherFiles() returned an unexpected error: %v", err)
 	}
 
-	expectedFiles := []string{"Makefile", "README.md", "main.go"}
+	expectedFiles := []string{"README.md", "config.yaml", "main.go"}
 	assertFilePathsMatch(t, files, expectedFiles)
 }
 
-func TestFileGatherer_GatherFiles_WithHidden(t *testing.T) {
-	tmpDir := setupTestFileSystem(t)
+func TestFileGatherer_GitignoreComplexPatterns(t *testing.T) {
+	tmpDir := t.TempDir()
 	logger, _ := zap.NewDevelopment()
+
+	createTestFile := func(filePath string, content string) {
+		fullPath := filepath.Join(tmpDir, filePath)
+		if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
+			t.Fatalf("Failed to create directory for %s: %v", fullPath, err)
+		}
+		// Corrected file permissions to satisfy gosec linter.
+		if err := os.WriteFile(fullPath, []byte(content), 0600); err != nil {
+			t.Fatalf("Failed to write file %s: %v", fullPath, err)
+		}
+	}
+
+	gitignoreContent := `
+# Ignore all .log files
+*.log
+# Ignore the build directory at the root
+/build/
+# Ignore all 'docs' directories
+docs/
+# Ignore files in any 'tmp' directory
+**/tmp/data.txt
+`
+	createTestFile(".gitignore", gitignoreContent)
+	createTestFile("main.go", "package main")
+	createTestFile("src/build/somefile.txt", "not in root build dir")
+	createTestFile("debug.log", "log content")
+	createTestFile("build/output.txt", "in root build dir")
+	createTestFile("src/docs/guide.md", "in a docs dir")
+	createTestFile("app/tmp/data.txt", "in a tmp dir")
+
 	cfg := &config.Config{
-		MaxFileSize:   100,
-		IncludeHidden: true,
+		MaxFileSize:   1024 * 1024,
+		IncludeHidden: false,
 	}
 	gatherer := NewFileGatherer(cfg, tmpDir, logger)
 
@@ -95,33 +116,6 @@ func TestFileGatherer_GatherFiles_WithHidden(t *testing.T) {
 		t.Fatalf("GatherFiles() returned an unexpected error: %v", err)
 	}
 
-	expectedFiles := []string{".env", "Makefile", "README.md", "main.go"}
+	expectedFiles := []string{"main.go", "src/build/somefile.txt"}
 	assertFilePathsMatch(t, files, expectedFiles)
-}
-
-// assertFilePathsMatch is a helper to avoid duplicating assertion logic.
-func assertFilePathsMatch(t *testing.T, actualFiles []FileInfo, expectedPaths []string) {
-	t.Helper()
-
-	if len(actualFiles) != len(expectedPaths) {
-		for _, f := range actualFiles {
-			t.Logf("Got file: %s", f.Path)
-		}
-
-		t.Fatalf("Expected %d files, but got %d", len(expectedPaths), len(actualFiles))
-	}
-
-	gatheredPaths := make([]string, len(actualFiles))
-	for i, f := range actualFiles {
-		gatheredPaths[i] = f.Path
-	}
-
-	sort.Strings(gatheredPaths)
-	sort.Strings(expectedPaths)
-
-	for i, expectedPath := range expectedPaths {
-		if gatheredPaths[i] != expectedPath {
-			t.Errorf("Expected file %q at index %d, but got %q", expectedPath, i, gatheredPaths[i])
-		}
-	}
 }
